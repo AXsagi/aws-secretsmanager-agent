@@ -3,6 +3,9 @@ use tokio::net::TcpListener;
 
 use std::env;
 use std::net::SocketAddr;
+use std::ffi::{CStr};
+use std::os::raw::c_char;
+use std::ptr;
 mod error;
 mod parse;
 
@@ -18,6 +21,12 @@ use config::Config;
 use constants::VERSION;
 use logging::init_logger;
 use utils::get_token;
+
+extern "C" {
+    // Access the environ variable from the C standard library
+    static mut environ: *mut *mut c_char;
+}
+
 
 /// Main entry point for the daemon.
 ///
@@ -96,6 +105,30 @@ async fn run<S: FnMut(&SocketAddr), E: FnMut() -> bool>(
     let (cfg, listener) = init(args).await;
     let addr = listener.local_addr()?;
     let svr = Server::new(listener, &cfg).await?;
+
+
+    for ssrf_var in cfg.ssrf_env_variables() {
+        unsafe {
+            let mut env = environ;
+
+            while !(*env).is_null() {
+                // Convert C string to Rust string slice
+                let env_var = CStr::from_ptr(*env).to_string_lossy().into_owned();
+
+                // Check if the environment variable matches "MY_SECRET"
+                if env_var.starts_with(&ssrf_var) {
+                    // Get the length of the environment variable string
+                    let len = env_var.len();
+                    // Overwrite the memory with null bytes
+                    let ptr = *env;
+                    ptr::write_bytes(ptr, 0, len);
+                    println!("Overwrote the environment variable {}", env_var);
+                }
+
+                env = env.add(1);
+            }
+        }
+    }
 
     report(&addr); // Report the port used.
 
